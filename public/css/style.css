@@ -13,3 +13,52 @@ html,body{
     height: 100%;
 }
 
+/* Styling for the routing summary control */
+.routing-summary-control {
+    background-color: white;
+    padding: 10px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.2);
+    margin: 10px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+/* Styling for the ambulance count control */
+.ambulance-count-control {
+    background-color: white;
+    padding: 10px;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.2);
+    margin: 10px;
+    font-size: 16px;
+    line-height: 1.5;
+    font-weight: bold;
+    color: #d32f2f;
+}
+
+/* Dispensary status indicators */
+.status-at-dispensary {
+    background-color: #4CAF50;
+    color: white;
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-weight: bold;
+    margin: 5px 0;
+    display: inline-block;
+}
+
+.status-en-route {
+    background-color: #FFC107;
+    color: #333;
+    padding: 3px 6px;
+    border-radius: 3px;
+    font-weight: bold;
+    margin: 5px 0;
+    display: inline-block;
+}
+
+/* Hide some Leaflet Routing Machine elements we don't need */
+.leaflet-routing-container {
+    display: none !important;
+}
