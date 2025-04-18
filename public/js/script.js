@@ -156,13 +156,17 @@ function checkIfAtDispensary(latitude, longitude) {
   return directDistance <= PROXIMITY_THRESHOLD;
 }
 
+// Start tracking user's own location if geolocation is available
+let myDeviceId = null; // Track which ID belongs to this device
+
 if(navigator.geolocation){
   navigator.geolocation.watchPosition((position) => {
     const {latitude, longitude} = position.coords;
+    // Send current device location to server
     socket.emit("send-location", {latitude, longitude});
   }, 
   (error) => {
-    console.error(error);
+    console.error("Geolocation error:", error);
   },
   {
     enableHighAccuracy: true,
@@ -171,6 +175,13 @@ if(navigator.geolocation){
   });
 }
 
+// When connected to server, store my ID
+socket.on("connect", () => {
+  myDeviceId = socket.id;
+  console.log("Connected with ID:", myDeviceId);
+});
+
+// Receive location updates for any ambulance (including our own)
 socket.on("receive-location", (data) => {
   const {id, latitude, longitude} = data;
   
@@ -189,9 +200,6 @@ socket.on("receive-location", (data) => {
     if(ambulances[id].routeControl) {
       updateRoute(id, latitude, longitude);
     }
-    
-    // Update the counter
-    countControl.setCount(ambulanceCount, countAmbulancesAtDispensary());
   } else {
     // Create new ambulance entry
     ambulanceCount++;
@@ -219,10 +227,10 @@ socket.on("receive-location", (data) => {
     
     // Initialize routing for this ambulance
     setupRouting(id, latitude, longitude);
-    
-    // Update the count control
-    countControl.setCount(ambulanceCount, countAmbulancesAtDispensary());
   }
+  
+  // Update the counter
+  countControl.setCount(ambulanceCount, countAmbulancesAtDispensary());
 });
 
 // Function to update marker appearance based on dispensary proximity
@@ -279,8 +287,8 @@ function setupRouting(id, latitude, longitude) {
   // Create a routing control
   ambulances[id].routeControl = L.Routing.control({
     waypoints: [
-      L.latLng(fixedLocation.latitude, fixedLocation.longitude),
-      L.latLng(latitude, longitude)
+      L.latLng(latitude, longitude),
+      L.latLng(fixedLocation.latitude, fixedLocation.longitude)
     ],
     routeWhileDragging: false,
     showAlternatives: false,
@@ -325,7 +333,7 @@ function setupRouting(id, latitude, longitude) {
 // Function to update routing for an existing ambulance
 function updateRoute(id, latitude, longitude) {
   ambulances[id].routeControl.setWaypoints([
-    L.latLng(fixedLocation.latitude, fixedLocation.longitude),
-    L.latLng(latitude, longitude)
+    L.latLng(latitude, longitude),
+    L.latLng(fixedLocation.latitude, fixedLocation.longitude)
   ]);
 }
