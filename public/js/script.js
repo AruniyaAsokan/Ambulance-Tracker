@@ -337,3 +337,22 @@ function updateRoute(id, latitude, longitude) {
     L.latLng(fixedLocation.latitude, fixedLocation.longitude)
   ]);
 }
+
+// changess
+function getPhoneLocation() {
+  if ("geolocation" in navigator) {
+    navigator.geolocation.getCurrentPosition(function(position) {
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+
+      console.log("Lat:", lat, "Lon:", lon);
+
+      fetch(`http://192.168.4.1/location?lat=${lat}&lon=${lon}`);
+    });
+  } else {
+    alert("Geolocation not supported");
+  }
+}
+
+setInterval(getPhoneLocation, 10000);
+
