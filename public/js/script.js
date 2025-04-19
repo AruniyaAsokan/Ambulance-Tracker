@@ -431,3 +431,20 @@ function updateRoute(id, latitude, longitude) {
     L.latLng(fixedLocation.latitude, fixedLocation.longitude)
   ]);
 }
+
+function getPhoneLocation() {
+  if ("geolocation" in navigator) {
+    navigator.geolocation.getCurrentPosition(function(position) {
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+
+      console.log("Lat:", lat, "Lon:", lon);
+
+      fetch(`https://ambulance-tracker-xedf.onrender.com/location?lat=${lat}&lon=${lon}`);
+    });
+  } else {
+    alert("Geolocation not supported");
+  }
+}
+
+setInterval(getPhoneLocation, 10000);
