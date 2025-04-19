@@ -1,5 +1,3 @@
-// Update your script.js with this implementation
-
 const socket = io();
 
 // Add a fixed marker (blue) - Hospital/Dispensary location
@@ -93,6 +91,8 @@ class RoutingSummaryControl extends L.Control {
     this.timeMinutes = 0;
     this.ambulanceNumber = options.ambulanceNumber || '';
     this.isAtDispensary = false;
+    this.batteryLevel = 'Unknown';
+    this.speed = 0;
   }
 
   onAdd(map) {
@@ -111,13 +111,17 @@ class RoutingSummaryControl extends L.Control {
       ${statusHTML}
       <div><strong>Road Distance:</strong> ${this.distanceKm.toFixed(2)} km</div>
       <div><strong>Est. Travel Time:</strong> ${this.timeMinutes.toFixed(0)} min</div>
+      <div><strong>Speed:</strong> ${this.speed.toFixed(1)} km/h</div>
+      <div><strong>Battery:</strong> ${this.batteryLevel}</div>
     `;
   }
 
-  setValues(distanceKm, timeMinutes, isAtDispensary) {
+  setValues(distanceKm, timeMinutes, isAtDispensary, batteryLevel = 'Unknown', speed = 0) {
     this.distanceKm = distanceKm;
     this.timeMinutes = timeMinutes;
     this.isAtDispensary = isAtDispensary;
+    this.batteryLevel = batteryLevel;
+    this.speed = speed;
     this.update();
   }
 }
@@ -156,14 +160,83 @@ function checkIfAtDispensary(latitude, longitude) {
   return directDistance <= PROXIMITY_THRESHOLD;
 }
 
+// Variables to track previous position for speed calculation
+let prevPosition = null;
+let prevTimestamp = null;
+
+// Function to get battery level
+async function getBatteryLevel() {
+  if ('getBattery' in navigator) {
+    try {
+      const battery = await navigator.getBattery();
+      return `${Math.round(battery.level * 100)}%`;
+    } catch (error) {
+      console.error("Battery API error:", error);
+      return 'Unknown';
+    }
+  } else if ('battery' in navigator) {
+    try {
+      const battery = await navigator.battery;
+      return `${Math.round(battery.level * 100)}%`;
+    } catch (error) {
+      console.error("Battery API error:", error);
+      return 'Unknown';
+    }
+  } else {
+    console.log("Battery API not supported");
+    return 'Not supported';
+  }
+}
+
 // Start tracking user's own location if geolocation is available
 let myDeviceId = null; // Track which ID belongs to this device
+let currentSpeed = 0;
 
 if(navigator.geolocation){
-  navigator.geolocation.watchPosition((position) => {
+  navigator.geolocation.watchPosition(async (position) => {
     const {latitude, longitude} = position.coords;
-    // Send current device location to server
-    socket.emit("send-location", {latitude, longitude});
+    const timestamp = position.timestamp;
+    
+    // Calculate speed using position
+    let speed = 0;
+    if (position.coords.speed && position.coords.speed >= 0) {
+      // Use the speed from the Geolocation API if available (in m/s)
+      speed = position.coords.speed * 3.6; // Convert to km/h
+    } else if (prevPosition && prevTimestamp) {
+      // Calculate speed based on distance and time difference
+      const distance = calculateDirectDistance(
+        prevPosition.latitude, prevPosition.longitude,
+        latitude, longitude
+      );
+      const timeDiff = (timestamp - prevTimestamp) / 1000; // in seconds
+      
+      if (timeDiff > 0) {
+        speed = (distance / timeDiff) * 3.6; // Convert to km/h
+      }
+    }
+    
+    // Update previous position for next calculation
+    prevPosition = { latitude, longitude };
+    prevTimestamp = timestamp;
+    
+    // Filter out unrealistic speed jumps
+    if (speed > 200) { // Filter unrealistic sudden spikes (over 200 km/h)
+      speed = currentSpeed;
+    } else {
+      // Apply some smoothing
+      currentSpeed = (currentSpeed * 0.7) + (speed * 0.3);
+    }
+    
+    // Get battery level
+    const batteryLevel = await getBatteryLevel();
+    
+    // Send current device location, battery and speed to server
+    socket.emit("send-location", {
+      latitude, 
+      longitude,
+      batteryLevel,
+      speed: currentSpeed
+    });
   }, 
   (error) => {
     console.error("Geolocation error:", error);
@@ -183,7 +256,7 @@ socket.on("connect", () => {
 
 // Receive location updates for any ambulance (including our own)
 socket.on("receive-location", (data) => {
-  const {id, latitude, longitude} = data;
+  const {id, latitude, longitude, batteryLevel = 'Unknown', speed = 0} = data;
   
   // Check proximity status
   const isAtDispensary = checkIfAtDispensary(latitude, longitude);
@@ -192,9 +265,22 @@ socket.on("receive-location", (data) => {
     // Update existing ambulance
     ambulances[id].marker.setLatLng([latitude, longitude]);
     ambulances[id].isAtDispensary = isAtDispensary;
+    ambulances[id].batteryLevel = batteryLevel;
+    ambulances[id].speed = speed;
     
     // Update marker appearance based on proximity
     updateMarkerAppearance(id);
+    
+    // Update routing summary with new values
+    if (ambulances[id].routingSummary) {
+      ambulances[id].routingSummary.setValues(
+        ambulances[id].routingSummary.distanceKm,
+        ambulances[id].routingSummary.timeMinutes,
+        isAtDispensary,
+        batteryLevel,
+        speed
+      );
+    }
     
     // Update the route
     if(ambulances[id].routeControl) {
@@ -219,7 +305,9 @@ socket.on("receive-location", (data) => {
       marker: ambulanceMarker,
       routeControl: null,
       routingSummary: null,
-      isAtDispensary: isAtDispensary
+      isAtDispensary: isAtDispensary,
+      batteryLevel: batteryLevel,
+      speed: speed
     };
     
     // Update marker appearance based on proximity
@@ -244,7 +332,9 @@ function updateMarkerAppearance(id) {
     
   ambulance.marker.bindPopup(`
     <strong>Ambulance ${ambulance.number}</strong><br>
-    ${proximityStatus}
+    ${proximityStatus}<br>
+    <strong>Speed:</strong> ${ambulance.speed.toFixed(1)} km/h<br>
+    <strong>Battery:</strong> ${ambulance.batteryLevel}
   `);
   
   // You could also change the icon based on status if desired
@@ -313,10 +403,12 @@ function setupRouting(id, latitude, longitude) {
     ambulances[id].routingSummary.setValues(
       distanceKm, 
       timeMinutes, 
-      ambulances[id].isAtDispensary
+      ambulances[id].isAtDispensary,
+      ambulances[id].batteryLevel,
+      ambulances[id].speed
     );
     
-    // Update marker popup
+    // Update marker popup with all info
     const proximityStatus = ambulances[id].isAtDispensary ? 
       '<div class="status-at-dispensary">AT DISPENSARY</div>' : 
       '<div class="status-en-route">EN ROUTE</div>';
@@ -325,7 +417,9 @@ function setupRouting(id, latitude, longitude) {
       <strong>Ambulance ${ambulances[id].number}</strong><br>
       ${proximityStatus}<br>
       <strong>Road distance:</strong> ${distanceKm.toFixed(2)} km<br>
-      <strong>Est. travel time:</strong> ${timeMinutes.toFixed(0)} min
+      <strong>Est. travel time:</strong> ${timeMinutes.toFixed(0)} min<br>
+      <strong>Speed:</strong> ${ambulances[id].speed.toFixed(1)} km/h<br>
+      <strong>Battery:</strong> ${ambulances[id].batteryLevel}
     `);
   });
 }
@@ -337,5 +431,3 @@ function updateRoute(id, latitude, longitude) {
     L.latLng(fixedLocation.latitude, fixedLocation.longitude)
   ]);
 }
-
-
