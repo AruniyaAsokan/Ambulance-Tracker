@@ -34,16 +34,6 @@ const redIcon = L.icon({
   shadowSize: [41, 41]
 });
 
-// Create a green icon for ESP32 markers
-const greenIcon = L.icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-  popupAnchor: [1, -34],
-  shadowSize: [41, 41]
-});
-
 // Add the fixed marker (blue)
 const fixedMarker = L.marker([fixedLocation.latitude, fixedLocation.longitude], {icon: blueIcon})
   .addTo(map)
@@ -60,10 +50,6 @@ const proximityCircle = L.circle([fixedLocation.latitude, fixedLocation.longitud
 // Store all data related to each ambulance
 const ambulances = {};
 let ambulanceCount = 0;
-
-// Notification counter and container
-let notificationCount = 0;
-const notifications = [];
 
 // Create a custom control for showing total ambulance count
 class AmbulanceCountControl extends L.Control {
@@ -83,7 +69,6 @@ class AmbulanceCountControl extends L.Control {
     this.container.innerHTML = `
       <div><strong>Ambulances Online:</strong> ${this.count}</div>
       <div><strong>At Dispensary:</strong> ${this.atDispensary}</div>
-      <div><strong>Notifications:</strong> <span id="notification-count">${notificationCount}</span></div>
     `;
   }
 
@@ -98,67 +83,6 @@ class AmbulanceCountControl extends L.Control {
 const countControl = new AmbulanceCountControl({position: 'topleft'});
 countControl.addTo(map);
 
-// Create a notification control
-class NotificationControl extends L.Control {
-  constructor(options) {
-    super(options);
-  }
-
-  onAdd(map) {
-    this.container = L.DomUtil.create('div', 'notification-control');
-    this.container.className = 'notification-panel leaflet-control';
-    this.update();
-    
-    // Add click handler to toggle notifications
-    L.DomEvent.on(this.container.querySelector('.notification-header'), 'click', function(e) {
-      const content = document.querySelector('.notification-content');
-      if (content.style.display === 'none') {
-        content.style.display = 'block';
-      } else {
-        content.style.display = 'none';
-      }
-    });
-    
-    return this.container;
-  }
-
-  update() {
-    this.container.innerHTML = `
-      <div class="notification-header">
-        <strong>Notifications</strong> <span class="notification-badge">${notificationCount}</span>
-      </div>
-      <div class="notification-content" style="display: none;">
-        <div id="notification-list">
-          ${notifications.length === 0 ? '<div class="no-notifications">No notifications</div>' : ''}
-          ${notifications.map(notification => `
-            <div class="notification-item ${notification.type}">
-              <div class="notification-time">${new Date(notification.timestamp).toLocaleTimeString()}</div>
-              <div class="notification-message">${notification.message}</div>
-              <div class="notification-ambulance">Ambulance ${getAmbulanceNumberById(notification.ambulance_id)}</div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
-  }
-}
-
-// Create and add the notification control
-const notificationControl = new NotificationControl({position: 'topright'});
-notificationControl.addTo(map);
-
-// Helper function to get ambulance number by ID
-function getAmbulanceNumberById(id) {
-  if (ambulances[id]) {
-    return ambulances[id].number;
-  }
-  // Extract number from ESP32 ID
-  if (id.startsWith('esp32-')) {
-    return id.replace('esp32-', '');
-  }
-  return id;
-}
-
 // Create a custom control for showing distance and time
 class RoutingSummaryControl extends L.Control {
   constructor(options) {
@@ -167,6 +91,8 @@ class RoutingSummaryControl extends L.Control {
     this.timeMinutes = 0;
     this.ambulanceNumber = options.ambulanceNumber || '';
     this.isAtDispensary = false;
+    this.batteryLevel = 'Unknown';
+    this.speed = 0;
   }
 
   onAdd(map) {
@@ -185,13 +111,17 @@ class RoutingSummaryControl extends L.Control {
       ${statusHTML}
       <div><strong>Road Distance:</strong> ${this.distanceKm.toFixed(2)} km</div>
       <div><strong>Est. Travel Time:</strong> ${this.timeMinutes.toFixed(0)} min</div>
+      <div><strong>Speed:</strong> ${this.speed.toFixed(1)} km/h</div>
+      <div><strong>Battery:</strong> ${this.batteryLevel}</div>
     `;
   }
 
-  setValues(distanceKm, timeMinutes, isAtDispensary) {
+  setValues(distanceKm, timeMinutes, isAtDispensary, batteryLevel = 'Unknown', speed = 0) {
     this.distanceKm = distanceKm;
     this.timeMinutes = timeMinutes;
     this.isAtDispensary = isAtDispensary;
+    this.batteryLevel = batteryLevel;
+    this.speed = speed;
     this.update();
   }
 }
@@ -230,47 +160,83 @@ function checkIfAtDispensary(latitude, longitude) {
   return directDistance <= PROXIMITY_THRESHOLD;
 }
 
-// Function to show a notification in the browser
-function showNotification(title, message) {
-  // Browser notification API
-  if ("Notification" in window) {
-    if (Notification.permission === "granted") {
-      new Notification(title, { body: message });
-    } else if (Notification.permission !== "denied") {
-      Notification.requestPermission().then(permission => {
-        if (permission === "granted") {
-          new Notification(title, { body: message });
-        }
-      });
+// Variables to track previous position for speed calculation
+let prevPosition = null;
+let prevTimestamp = null;
+
+// Function to get battery level
+async function getBatteryLevel() {
+  if ('getBattery' in navigator) {
+    try {
+      const battery = await navigator.getBattery();
+      return `${Math.round(battery.level * 100)}%`;
+    } catch (error) {
+      console.error("Battery API error:", error);
+      return 'Unknown';
     }
+  } else if ('battery' in navigator) {
+    try {
+      const battery = await navigator.battery;
+      return `${Math.round(battery.level * 100)}%`;
+    } catch (error) {
+      console.error("Battery API error:", error);
+      return 'Unknown';
+    }
+  } else {
+    console.log("Battery API not supported");
+    return 'Not supported';
   }
-  
-  // Also show visual notification
-  const toast = document.createElement('div');
-  toast.className = 'notification-toast';
-  toast.innerHTML = `
-    <div class="toast-title">${title}</div>
-    <div class="toast-message">${message}</div>
-  `;
-  document.body.appendChild(toast);
-  
-  // Remove after 5 seconds
-  setTimeout(() => {
-    toast.classList.add('toast-hide');
-    setTimeout(() => {
-      document.body.removeChild(toast);
-    }, 500);
-  }, 5000);
 }
 
 // Start tracking user's own location if geolocation is available
 let myDeviceId = null; // Track which ID belongs to this device
+let currentSpeed = 0;
 
 if(navigator.geolocation){
-  navigator.geolocation.watchPosition((position) => {
+  navigator.geolocation.watchPosition(async (position) => {
     const {latitude, longitude} = position.coords;
-    // Send current device location to server
-    socket.emit("send-location", {latitude, longitude});
+    const timestamp = position.timestamp;
+    
+    // Calculate speed using position
+    let speed = 0;
+    if (position.coords.speed && position.coords.speed >= 0) {
+      // Use the speed from the Geolocation API if available (in m/s)
+      speed = position.coords.speed * 3.6; // Convert to km/h
+    } else if (prevPosition && prevTimestamp) {
+      // Calculate speed based on distance and time difference
+      const distance = calculateDirectDistance(
+        prevPosition.latitude, prevPosition.longitude,
+        latitude, longitude
+      );
+      const timeDiff = (timestamp - prevTimestamp) / 1000; // in seconds
+      
+      if (timeDiff > 0) {
+        speed = (distance / timeDiff) * 3.6; // Convert to km/h
+      }
+    }
+    
+    // Update previous position for next calculation
+    prevPosition = { latitude, longitude };
+    prevTimestamp = timestamp;
+    
+    // Filter out unrealistic speed jumps
+    if (speed > 200) { // Filter unrealistic sudden spikes (over 200 km/h)
+      speed = currentSpeed;
+    } else {
+      // Apply some smoothing
+      currentSpeed = (currentSpeed * 0.7) + (speed * 0.3);
+    }
+    
+    // Get battery level
+    const batteryLevel = await getBatteryLevel();
+    
+    // Send current device location, battery and speed to server
+    socket.emit("send-location", {
+      latitude, 
+      longitude,
+      batteryLevel,
+      speed: currentSpeed
+    });
   }, 
   (error) => {
     console.error("Geolocation error:", error);
@@ -286,46 +252,11 @@ if(navigator.geolocation){
 socket.on("connect", () => {
   myDeviceId = socket.id;
   console.log("Connected with ID:", myDeviceId);
-  
-  // Request notification permission when connected
-  if ("Notification" in window) {
-    Notification.requestPermission();
-  }
-});
-
-// Receive new notifications
-socket.on("new-notification", (data) => {
-  const { ambulance_id, notification } = data;
-  
-  // Add to notifications array
-  notifications.unshift(notification); // Add to beginning
-  
-  // Keep only the last 20 notifications
-  if (notifications.length > 20) {
-    notifications.pop();
-  }
-  
-  // Update count
-  notificationCount++;
-  document.getElementById("notification-count").textContent = notificationCount;
-  
-  // Update notification panel
-  notificationControl.update();
-  
-  // Show notification alert
-  let ambulanceNum = getAmbulanceNumberById(ambulance_id);
-  showNotification(`Ambulance ${ambulanceNum}`, notification.message);
-  
-  // Play sound (if element exists)
-  const notificationSound = document.getElementById("notification-sound");
-  if (notificationSound) {
-    notificationSound.play();
-  }
 });
 
 // Receive location updates for any ambulance (including our own)
 socket.on("receive-location", (data) => {
-  const {id, latitude, longitude, deviceType, batteryLevel, speed} = data;
+  const {id, latitude, longitude, batteryLevel = 'Unknown', speed = 0} = data;
   
   // Check proximity status
   const isAtDispensary = checkIfAtDispensary(latitude, longitude);
@@ -334,49 +265,39 @@ socket.on("receive-location", (data) => {
     // Update existing ambulance
     ambulances[id].marker.setLatLng([latitude, longitude]);
     ambulances[id].isAtDispensary = isAtDispensary;
-    
-    // Store device details if available
-    if (deviceType) {
-      ambulances[id].deviceType = deviceType;
-      ambulances[id].batteryLevel = batteryLevel;
-      ambulances[id].speed = speed;
-    }
+    ambulances[id].batteryLevel = batteryLevel;
+    ambulances[id].speed = speed;
     
     // Update marker appearance based on proximity
     updateMarkerAppearance(id);
+    
+    // Update routing summary with new values
+    if (ambulances[id].routingSummary) {
+      ambulances[id].routingSummary.setValues(
+        ambulances[id].routingSummary.distanceKm,
+        ambulances[id].routingSummary.timeMinutes,
+        isAtDispensary,
+        batteryLevel,
+        speed
+      );
+    }
     
     // Update the route
     if(ambulances[id].routeControl) {
       updateRoute(id, latitude, longitude);
     }
-    
-    // Check if ambulance just arrived at dispensary
-    if (isAtDispensary && !ambulances[id].previouslyAtDispensary) {
-      // Show notification for arrival (except for myself)
-      if (id !== myDeviceId) {
-        showNotification(`Ambulance ${ambulances[id].number} Arrived`, 
-          `Ambulance ${ambulances[id].number} has arrived at the dispensary`);
-      }
-    }
-    
-    // Update previous status
-    ambulances[id].previouslyAtDispensary = isAtDispensary;
-    
   } else {
     // Create new ambulance entry
     ambulanceCount++;
     
-    // Choose icon based on device type
-    const markerIcon = deviceType === "ESP32" ? greenIcon : redIcon;
-    
     // Create ambulance marker with label
     const ambulanceMarker = L.marker([latitude, longitude], {
-      icon: markerIcon,
-      title: deviceType === "ESP32" ? `ESP32 Device ${id.replace('esp32-', '')}` : `Ambulance ${ambulanceCount}`
+      icon: redIcon,
+      title: `Ambulance ${ambulanceCount}`
     }).addTo(map);
     
     // Add ambulance number to popup
-    ambulanceMarker.bindPopup(`<strong>${deviceType === "ESP32" ? `ESP32 Device ${id.replace('esp32-', '')}` : `Ambulance ${ambulanceCount}`}</strong><br>Initializing route...`);
+    ambulanceMarker.bindPopup(`<strong>Ambulance ${ambulanceCount}</strong><br>Initializing route...`);
     
     // Store the ambulance data
     ambulances[id] = {
@@ -385,10 +306,8 @@ socket.on("receive-location", (data) => {
       routeControl: null,
       routingSummary: null,
       isAtDispensary: isAtDispensary,
-      previouslyAtDispensary: isAtDispensary,
-      deviceType: deviceType || "Browser",
-      batteryLevel: batteryLevel || "Unknown",
-      speed: speed || 0
+      batteryLevel: batteryLevel,
+      speed: speed
     };
     
     // Update marker appearance based on proximity
@@ -396,12 +315,6 @@ socket.on("receive-location", (data) => {
     
     // Initialize routing for this ambulance
     setupRouting(id, latitude, longitude);
-    
-    // Show notification for new ambulance (except for myself)
-    if (id !== myDeviceId) {
-      showNotification("New Ambulance", 
-        `${deviceType === "ESP32" ? `ESP32 Device ${id.replace('esp32-', '')}` : `Ambulance ${ambulanceCount}`} is now online`);
-    }
   }
   
   // Update the counter
@@ -412,39 +325,24 @@ socket.on("receive-location", (data) => {
 function updateMarkerAppearance(id) {
   const ambulance = ambulances[id];
   
-  // Update popup content based on proximity and device type
+  // Update popup content based on proximity
   const proximityStatus = ambulance.isAtDispensary ? 
     '<div class="status-at-dispensary">AT DISPENSARY</div>' : 
     '<div class="status-en-route">EN ROUTE</div>';
-  
-  let popupContent = `
-    <strong>${ambulance.deviceType === "ESP32" ? `ESP32 Device ${id.replace('esp32-', '')}` : `Ambulance ${ambulance.number}`}</strong><br>
-    ${proximityStatus}
-  `;
-  
-  // Add extra information for ESP32 devices
-  if (ambulance.deviceType === "ESP32") {
-    popupContent += `
-      <div><strong>Battery:</strong> ${ambulance.batteryLevel}%</div>
-      <div><strong>Speed:</strong> ${ambulance.speed} km/h</div>
-    `;
-  }
     
-  ambulance.marker.bindPopup(popupContent);
+  ambulance.marker.bindPopup(`
+    <strong>Ambulance ${ambulance.number}</strong><br>
+    ${proximityStatus}<br>
+    <strong>Speed:</strong> ${ambulance.speed.toFixed(1)} km/h<br>
+    <strong>Battery:</strong> ${ambulance.batteryLevel}
+  `);
+  
+  // You could also change the icon based on status if desired
+  // ambulance.marker.setIcon(ambulance.isAtDispensary ? greenIcon : redIcon);
 }
 
 socket.on("user-disconnected", (id) => {
   if(ambulances[id]) {
-    // Show notification for ambulance going offline (except for myself)
-    if (id !== myDeviceId) {
-      const ambulanceType = ambulances[id].deviceType === "ESP32" ? 
-        `ESP32 Device ${id.replace('esp32-', '')}` : 
-        `Ambulance ${ambulances[id].number}`;
-        
-      showNotification(`${ambulanceType} Offline`, 
-        `${ambulanceType} has gone offline`);
-    }
-    
     // Remove marker
     map.removeLayer(ambulances[id].marker);
     
@@ -505,11 +403,24 @@ function setupRouting(id, latitude, longitude) {
     ambulances[id].routingSummary.setValues(
       distanceKm, 
       timeMinutes, 
-      ambulances[id].isAtDispensary
+      ambulances[id].isAtDispensary,
+      ambulances[id].batteryLevel,
+      ambulances[id].speed
     );
     
-    // Update marker popup with routing info
-    updateMarkerAppearance(id);
+    // Update marker popup with all info
+    const proximityStatus = ambulances[id].isAtDispensary ? 
+      '<div class="status-at-dispensary">AT DISPENSARY</div>' : 
+      '<div class="status-en-route">EN ROUTE</div>';
+      
+    ambulances[id].marker.bindPopup(`
+      <strong>Ambulance ${ambulances[id].number}</strong><br>
+      ${proximityStatus}<br>
+      <strong>Road distance:</strong> ${distanceKm.toFixed(2)} km<br>
+      <strong>Est. travel time:</strong> ${timeMinutes.toFixed(0)} min<br>
+      <strong>Speed:</strong> ${ambulances[id].speed.toFixed(1)} km/h<br>
+      <strong>Battery:</strong> ${ambulances[id].batteryLevel}
+    `);
   });
 }
 
@@ -521,19 +432,6 @@ function updateRoute(id, latitude, longitude) {
   ]);
 }
 
-// Function to send a notification to an ambulance
-function sendNotification(ambulanceId, message) {
-  fetch(`/api/send-notification?ambulance_id=${ambulanceId}&message=${encodeURIComponent(message)}&type=info`)
-    .then(response => response.text())
-    .then(result => {
-      console.log("Notification sent:", result);
-    })
-    .catch(error => {
-      console.error("Error sending notification:", error);
-    });
-}
-
-// Function to manually trigger location update (for testing)
 function getPhoneLocation() {
   if ("geolocation" in navigator) {
     navigator.geolocation.getCurrentPosition(function(position) {
@@ -542,131 +440,11 @@ function getPhoneLocation() {
 
       console.log("Lat:", lat, "Lon:", lon);
 
-      fetch(`/location?lat=${lat}&lon=${lon}`);
+      fetch(`https://ambulance-tracker-xedf.onrender.com/location?lat=${lat}&lon=${lon}`);
     });
   } else {
-    console.log("Geolocation not supported");
+    alert("Geolocation not supported");
   }
 }
 
-// Only run this interval for testing if needed
-// setInterval(getPhoneLocation, 10000);
-
-// Add CSS for notifications
-const style = document.createElement('style');
-style.textContent = `
-  .notification-panel {
-    background: white;
-    border-radius: 4px;
-    box-shadow: 0 1px 5px rgba(0,0,0,0.4);
-    max-width: 300px;
-  }
-  
-  .notification-header {
-    padding: 10px;
-    font-size: 14px;
-    border-bottom: 1px solid #eee;
-    cursor: pointer;
-  }
-  
-  .notification-badge {
-    background: #f44336;
-    color: white;
-    border-radius: 50%;
-    padding: 2px 6px;
-    font-size: 12px;
-  }
-  
-  .notification-content {
-    max-height: 300px;
-    overflow-y: auto;
-  }
-  
-  .notification-item {
-    padding: 8px 10px;
-    border-bottom: 1px solid #eee;
-    font-size: 13px;
-  }
-  
-  .notification-time {
-    font-size: 11px;
-    color: #777;
-  }
-  
-  .notification-message {
-    margin: 4px 0;
-  }
-  
-  .notification-ambulance {
-    font-size: 11px;
-    font-style: italic;
-  }
-  
-  .no-notifications {
-    padding: 10px;
-    color: #777;
-    text-align: center;
-    font-style: italic;
-  }
-  
-  .notification-toast {
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    background: rgba(0,0,0,0.8);
-    color: white;
-    padding: 10px 15px;
-    border-radius: 4px;
-    max-width: 300px;
-    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-    z-index: 1000;
-    animation: fadeIn 0.5s;
-  }
-  
-  .toast-title {
-    font-weight: bold;
-    margin-bottom: 5px;
-  }
-  
-  .toast-hide {
-    animation: fadeOut 0.5s;
-  }
-  
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  
-  @keyframes fadeOut {
-    from { opacity: 1; transform: translateY(0); }
-    to { opacity: 0; transform: translateY(20px); }
-  }
-  
-  .status-at-dispensary {
-    background: #4CAF50;
-    color: white;
-    padding: 3px 6px;
-    border-radius: 3px;
-    display: inline-block;
-    font-size: 12px;
-    margin: 2px 0;
-  }
-  
-  .status-en-route {
-    background: #FF9800;
-    color: white;
-    padding: 3px 6px;
-    border-radius: 3px;
-    display: inline-block;
-    font-size: 12px;
-    margin: 2px 0;
-  }
-`;
-document.head.appendChild(style);
-
-// Add notification sound
-const audio = document.createElement('audio');
-audio.id = 'notification-sound';
-audio.src = 'https://assets.mixkit.co/sfx/preview/mixkit-software-interface-start-2574.mp3'; // Replace with your sound URL
-audio.style.display = 'none';
-document.body.appendChild(audio);
+setInterval(getPhoneLocation, 10000);
