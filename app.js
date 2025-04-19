@@ -52,3 +52,51 @@ app.get("/", function (req, res) {
 server.listen(9090, () => {
     console.log('Server running on port 9090');
 });
+
+// New API endpoint for ESP32 devices
+app.get("/api/ambulance", function (req, res) {
+    const { id, lat, lon, battery, speed } = req.query;
+    
+    // Validate data
+    if (!id || !lat || !lon) {
+        return res.status(400).send("Missing required parameters");
+    }
+    
+    try {
+        const latitude = parseFloat(lat);
+        const longitude = parseFloat(lon);
+        const batteryLevel = battery || 'Unknown';
+        const speedValue = parseFloat(speed) || 0;
+        
+        // Create a persistent ID for the ESP32 device
+        const deviceId = `esp32-${id}`;
+        
+        // Store ambulance data
+        activeAmbulances[deviceId] = {
+            latitude,
+            longitude,
+            batteryLevel,
+            speed: speedValue,
+            deviceType: "ESP32",
+            lastUpdate: Date.now()
+        };
+        
+        console.log(`ESP32 device ${id} updated:`, {latitude, longitude, batteryLevel, speed: speedValue});
+        
+        // Broadcast to all connected clients
+        io.emit("receive-location", {
+            id: deviceId,
+            latitude,
+            longitude,
+            batteryLevel,
+            speed: speedValue,
+            deviceType: "ESP32",
+            lastUpdate: Date.now()
+        });
+        
+        res.status(200).send("Data received");
+    } catch (err) {
+        console.error("Error processing ESP32 data:", err);
+        res.status(500).send("Server error");
+    }
+});
